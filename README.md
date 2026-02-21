@@ -1,59 +1,191 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# File Converter (Laravel + Docker)
+
+![Laravel](https://img.shields.io/badge/Laravel-10-red)
+![Docker](https://img.shields.io/badge/Docker-Enabled-blue)
+![Queue](https://img.shields.io/badge/Queue-Async-green)
+
+Category-based multi-file converter built with Laravel, Docker and asynchronous queue workers.
+
+---
+
+## Preview
 
 <p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
+  <img src="screenshots/app.png" width="850">
 </p>
 
-## About Laravel
+Screenshot located in `/screenshots` directory.
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+---
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## Overview
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+This application allows users to:
 
-## Learning Laravel
+- Upload multiple files simultaneously
+- Select a source category (Image or Document)
+- Convert uploaded files into a selected target format
+- Download all converted files as a ZIP archive
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.
+All conversion processes run asynchronously using Laravel Queue workers inside Docker containers.
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+---
 
-## Laravel Sponsors
+## Features
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+### Category-Based Conversion
 
-### Premium Partners
+Instead of selecting individual file extensions, users select a file category.
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
+#### Image Files
 
-## Contributing
+Accepted formats:
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+- jpg
+- jpeg
+- png
+- webp
 
-## Code of Conduct
+Target formats:
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+- jpg
+- png
+- webp
 
-## Security Vulnerabilities
+Same-format conversions are automatically prevented.
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+#### Document Files
+
+Accepted formats:
+
+- docx
+- xlsx
+- pptx
+
+Target formats:
+
+- pdf
+- html
+- txt
+
+Mixed uploads are supported (e.g. png + webp together).
+
+---
+
+## Architecture
+
+- Laravel 10+
+- Docker & Docker Compose
+- MySQL (containerized)
+- Laravel Queue Workers (async processing)
+- LibreOffice Headless (document conversion)
+- Imagick (image conversion)
+- Alpine.js frontend
+- Automatic ZIP batch export
+
+All file processing occurs inside isolated Docker containers.
+
+LibreOffice and Imagick are preinstalled in the Docker environment.
+
+---
+
+## Installation
+
+### 1. Clone repository
+
+```bash
+git clone https://github.com/ArdaRecep/file-converter.git
+cd file-converter
+```
+
+---
+
+### 2. Start Docker environment
+
+```bash
+docker compose up -d --build
+```
+
+---
+
+### 3. Laravel setup
+
+Enter container:
+
+```bash
+docker exec -it file-converter-app bash
+```
+
+Install dependencies and configure environment:
+
+```bash
+composer install
+cp .env.example .env
+php artisan key:generate
+php artisan migrate
+php artisan storage:link
+```
+
+Important:
+
+```
+DB_HOST=db
+```
+
+must be set inside `.env` when running via Docker.
+
+---
+
+### 4. Start queue worker
+
+Run queue worker in a separate terminal:
+
+```bash
+docker exec -it file-converter-app php artisan queue:work
+```
+
+---
+
+## How It Works
+
+1. User selects conversion category (Image or Document)
+2. Multiple files can be uploaded at once
+3. Backend validates extensions based on category
+4. Each file is dispatched to a Laravel queue job
+5. Converted outputs are stored in:
+
+```
+storage/app/conversions/{conversion_id}/output
+```
+
+6. Results are compressed into a ZIP archive and provided for download.
+
+---
+
+## Technical Highlights
+
+- Category-driven conversion architecture
+- Mixed file upload support
+- Dockerized LibreOffice headless conversion
+- Background processing with Laravel Queue
+- Imagick-based image conversion and optimization
+- Automatic ZIP packaging of results
+- Clean separation between controller and job logic
+
+---
+
+## Future Improvements
+
+- PDF → Image conversion
+- Drag & drop upload UI
+- Conversion progress bar improvements
+- Cloud storage integration (AWS S3 etc.)
+- Authentication system
+- Rate limiting & job prioritization
+- Automatic format detection from uploaded files
+
+---
 
 ## License
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+MIT

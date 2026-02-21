@@ -19,50 +19,75 @@ class ConversionController extends Controller
     public function store(Request $request)
     {
         $data = $request->validate([
-            'source_type' => 'required|in:docx,image',
-            'target_type' => 'required|in:pdf,webp',
-            'files' => 'required|array|min:1|max:20',
-            'files.*' => 'file|max:25600',
+            'source_type' => 'required|in:document,image',
+            'target_type' => 'required|string',
+            'files'       => 'required|array|min:1|max:20',
+            'files.*'     => 'file|max:25600',
         ]);
 
-        if ($data['source_type'] === 'docx' && $data['target_type'] !== 'pdf') {
-            return response()->json(['message' => 'DOCX sadece PDF olur'], 422);
-        }
-        if ($data['source_type'] === 'image' && $data['target_type'] !== 'webp') {
-            return response()->json(['message' => 'Image sadece WEBP olur'], 422);
+        $cfg            = config('conversions.categories');
+        $sourceCategory = $data['source_type'];
+        $target         = strtolower(trim($data['target_type']));
+
+        if (!isset($cfg[$sourceCategory])) {
+            return response()->json(['message' => 'Geçersiz kaynak tür'], 422);
         }
 
+        $allowedTargets = $cfg[$sourceCategory]['targets'] ?? [];
+        if (!in_array($target, $allowedTargets, true)) {
+            return response()->json(['message' => 'Bu hedef format desteklenmiyor'], 422);
+        }
+
+        $allowedExts = array_map(
+            fn($e) => $e === 'jpeg' ? 'jpg' : $e,
+            $cfg[$sourceCategory]['accept'] ?? []
+        );
+
+        // Sadece kategoriye uygun olmayan uzantıları reddet
         foreach ($request->file('files') as $f) {
             $ext = strtolower($f->getClientOriginalExtension());
-            if ($data['source_type'] === 'docx' && $ext !== 'docx') {
-                return response()->json(['message' => 'Sadece .docx yükleyin'], 422);
-            }
-            if ($data['source_type'] === 'image' && !in_array($ext, ['jpg', 'jpeg', 'png'], true)) {
-                return response()->json(['message' => 'Sadece .jpg/.jpeg/.png yükleyin'], 422);
+            if ($ext === 'jpeg') $ext = 'jpg';
+
+            if (!in_array($ext, $allowedExts, true)) {
+                return response()->json(['message' => "Bu dosya türü kabul edilmiyor: .{$ext}"], 422);
             }
         }
 
         $conversion = Conversion::create([
-            'source_type' => $data['source_type'],
-            'target_type' => $data['target_type'],
-            'status' => 'queued',
+            'source_type' => $sourceCategory,
+            'target_type' => $target,
+            'status'      => 'queued',
         ]);
 
+        $disk     = Storage::disk('local');
         $inputDir = "conversions/{$conversion->id}/input";
-        $outputDir = "conversions/{$conversion->id}/output";
-        $disk = Storage::disk('local');
 
         $disk->makeDirectory($inputDir);
-        $disk->makeDirectory($outputDir);
+        $disk->makeDirectory("conversions/{$conversion->id}/output");
 
         foreach ($request->file('files') as $file) {
+            $ext = strtolower($file->getClientOriginalExtension());
+            if ($ext === 'jpeg') $ext = 'jpg';
+
             $stored = $file->store($inputDir, 'local');
+
+            // Aynı formata dönüşüm — dispatch etme, direkt failed kaydet
+            if ($sourceCategory === 'image' && $ext === $target) {
+                ConversionFile::create([
+                    'conversion_id' => $conversion->id,
+                    'original_name' => $file->getClientOriginalName(),
+                    'input_path'    => $stored,
+                    'status'        => 'failed',
+                    'error'         => "Aynı formata dönüşüm gereksiz: .{$ext} → .{$target}",
+                ]);
+                continue;
+            }
 
             $row = ConversionFile::create([
                 'conversion_id' => $conversion->id,
                 'original_name' => $file->getClientOriginalName(),
-                'input_path' => $stored,
-                'status' => 'queued',
+                'input_path'    => $stored,
+                'status'        => 'queued',
             ]);
 
             ConvertFileJob::dispatch($row->id);
@@ -73,32 +98,44 @@ class ConversionController extends Controller
 
     public function show(Conversion $conversion)
     {
-        $total = $conversion->files()->count();
-        $done = $conversion->files()->where('status', 'done')->count();
-        $failed = $conversion->files()->where('status', 'failed')->count();
+        $total   = $conversion->files()->count();
+        $done    = $conversion->files()->where('status', 'done')->count();
+        $failed  = $conversion->files()->where('status', 'failed')->count();
+        $pending = $total - $done - $failed;
 
-        if ($failed > 0)
-            $conversion->status = 'failed';
-        elseif ($total > 0 && $done === $total)
-            $conversion->status = 'done';
-        else
-            $conversion->status = 'processing';
+        if ($pending > 0) {
+            $status = 'processing';
+        } elseif ($done > 0 && $failed === 0) {
+            $status = 'done';
+        } elseif ($done > 0 && $failed > 0) {
+            $status = 'partial'; // bazı dosyalar başarılı, bazıları değil
+        } else {
+            $status = 'failed';
+        }
 
+        $conversion->status = $status;
         $conversion->save();
 
+        $failedFiles = $conversion->files()
+            ->where('status', 'failed')
+            ->get(['original_name', 'error']);
+
         return response()->json([
-            'id' => $conversion->id,
-            'status' => $conversion->status,
-            'total' => $total,
-            'done' => $done,
-            'failed' => $failed,
+            'id'           => $conversion->id,
+            'status'       => $status,
+            'total'        => $total,
+            'done'         => $done,
+            'failed'       => $failed,
+            'failed_files' => $failedFiles,
         ]);
     }
 
     public function download(Conversion $conversion)
     {
-        if ($conversion->status !== 'done')
+        // done veya partial durumunda indir
+        if (!in_array($conversion->status, ['done', 'partial'])) {
             abort(404);
+        }
 
         $disk = Storage::disk('local');
 
@@ -109,7 +146,7 @@ class ConversionController extends Controller
         $disk->makeDirectory($zipDir);
         @unlink($zipAbs);
 
-        $zip = new ZipArchive();
+        $zip    = new ZipArchive();
         $opened = $zip->open($zipAbs, ZipArchive::CREATE | ZipArchive::OVERWRITE);
         if ($opened !== true) {
             abort(500, "Zip open failed: {$opened}");
@@ -119,15 +156,13 @@ class ConversionController extends Controller
 
         $i = 1;
         foreach ($files as $f) {
-            if (!$f->output_path)
-                continue;
+            if (!$f->output_path) continue;
 
             $outAbs = $disk->path($f->output_path);
-            if (!is_file($outAbs))
-                continue;
+            if (!is_file($outAbs)) continue;
 
             $base = pathinfo($f->original_name, PATHINFO_FILENAME);
-            $ext = $conversion->target_type;
+            $ext  = $conversion->target_type;
             $name = "Converted-{$base}-{$i}.{$ext}";
 
             $zip->addFile($outAbs, $name);
